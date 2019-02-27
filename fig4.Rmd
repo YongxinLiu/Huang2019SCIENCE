@@ -1,0 +1,332 @@
+---
+title: "A specialized metabolic network selectively modulates Arabidopsis root microbiota"
+author: "Ancheng C. Huang,1# Ting Jiang,2,3,4# Yong-Xin Liu,2,3 Yue-Chen Bai,5,6 James Reed,1 Alain Goossens,5,6 Hans-Wilhelm Nützmann,1,ϯ Yang Bai,2,3,4* Anne Osbourn1* "
+date: "2019/2/27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Clean workspace
+rm(list=ls()) 
+# Load setting and functions
+source("script/stat_plot_functions.R")
+# Set output directory
+output_dir="./"
+```
+
+The R markdown mainly includes scripts for visualization 16S amplicon data in thie papers.
+
+## (A) Constrained principal ordination analysis (CPCoA) of Bray-Curtis dissimilarity showing plant genotype effects. 
+
+Total number of individual plants used for analyses: Col-0 (n = 12), thas-ko1 (n = 12), thas-ko2 (n = 9), thah-ko (n = 14), thao-ko (n = 13), thaa2-ko (n = 9), thaa2-crispr (n = 12). Biological replicates (individual plants) from two independent experiments (experiment 1 and 2) are indicated by dots and triangles, respectively. Ellipses include 68% of samples from each genotype.
+
+
+Data filter for OTU table and selected groups
+
+```{r cpcoa_filter}
+system("mkdir -p fig4")
+# Set subset genotype list and order for analysis and visualization
+geno_list = c("b3Col","b3ThasKO1","b3ThasKO2","b3ThahKO","b3ThadKO","b3ACT2CR","b3ACT2KO")
+
+# reads experiment design
+design = read.table("data/metadata.txt", header=T, row.names=1, sep="\t")
+design$group=design$groupID
+
+# Subset genotype
+sub_design = subset(design, group %in% geno_list)
+# Set group order
+sub_design$group  = factor(sub_design$group, levels = geno_list)
+
+# read otutab
+beta = read.table(paste("data/otutab.txt",sep=""), header=T, row.names=1, sep="\t", comment.char="") 
+
+# Cross screening
+idx = rownames(sub_design) %in% colnames(beta)
+sub_design=sub_design[idx,]
+sub_beta=beta[,rownames(sub_design)]
+
+# Normalization to 100
+otutab = as.data.frame(t(sub_beta)/colSums(sub_beta,na=T)*100)
+
+# Filter median of OTU abundance > 0.01% in each group. Total OTUs number from 10659 decreased to 984, variance (total, X & Y) increased.
+# Filter by group low abundance
+# set initail parameter
+design = sub_design
+norm = otutab
+# get group info
+grp = design[, "groupID", drop=F]
+# merge by row.names
+mat_t2 = merge(grp, norm, by="row.names")
+mat_t2 = mat_t2[,-1]
+# batch calculate median by 
+mat_mean = aggregate(mat_t2[,-1], by=mat_t2[1], FUN=median) # mean
+mat_mean_final = do.call(rbind, mat_mean)[-1,]
+geno = mat_mean$group
+colnames(mat_mean_final) = geno
+# filter OTU table by median 0.01%
+filtered = mat_mean_final[apply(mat_mean_final,1,max) >= 0.01, ] # select OTU at least one sample > 0.1%
+otutab = otutab[,rownames(filtered)]
+```
+
+
+CPCoA plot
+
+```{r cpcoa}
+# set distance type
+m="bray"
+
+# Constrained analysis OTU table by genotype
+capscale.gen = capscale(otutab ~ group, data=sub_design, add=F, sqrt.dist=T, distance= m) 
+
+# ANOVA-like permutation analysis
+perm_anova.gen = anova.cca(capscale.gen, permutations = 10000, parallel = 9)
+
+# generate variability tables and calculate confidence intervals for the variance
+var_tbl.gen = variability_table(capscale.gen)
+eig = capscale.gen$CCA$eig
+variance = var_tbl.gen["constrained", "proportion"]
+p.val = perm_anova.gen[1, 4]
+
+# extract the weighted average (sample) scores
+points = capscale.gen$CCA$wa[, 1:2]
+points = as.data.frame(points)
+points = cbind(points, sub_design)
+
+# plot PC 1 and 2
+p = ggplot(points, aes(x=CAP1, y=CAP2, color=genotype)) + geom_point(alpha=.7, size=2) +
+	labs(x=paste("CPCoA 1 (", format(100 * eig[1] / sum(eig), digits=4), "%)", sep=""),
+	y=paste("CPCoA 2 (", format(100 * eig[2] / sum(eig), digits=4), "%)", sep="")) +
+	ggtitle(paste(format(100 * variance,digits=3)," % of variance; p=",format(p.val,digits=2),sep=""))+
+	theme_classic() + main_theme
+p = p + stat_ellipse(level=0.68)
+p
+# save pdf
+ggsave(paste("fig4/a.cpcoa_stat_", m, ".pdf", sep=""), p, width = 5, height = 3)
+
+# Rename label
+levels(points$group) = c("Col-0","thas-ko1","thas-ko2","thah-ko","thao-ko","thaa2-ko","thaa2-crispr")
+
+# add shape by batch3
+p = ggplot(points, aes(x=CAP1, y=CAP2, color=group,shape=batch3)) + geom_point(alpha=.7, size=2) +
+	labs(x=paste("CPCoA 1 (", format(100 * eig[1] / sum(eig), digits=4), "%)", sep=""),
+	y=paste("CPCoA 2 (", format(100 * eig[2] / sum(eig), digits=4), "%)", sep="")) + 
+	ggtitle(paste(format(100 * variance, digits=3), " % of variance; p=",format(p.val, digits=2),sep="")) + 
+	theme_classic() + main_theme
+p
+ggsave(paste("fig4/a.cpcoa_shape_", m, ".pdf", sep=""), p, width = 5, height = 3)
+```
+
+
+## (B) Phylum distribution of the root microbiota compositions of the tested A. thaliana genotypes. 
+
+As the relative abundance of Proteobacteria is more than 50%, bacteria in this phylum are shown at the class level. # indicates Bacteroidetes significantly higher than that in Col-0 roots at P < 0.05; * indicates Alphaproteobacteria and Deltaproteobacteria significantly lower than that in Col-0 at P < 0.05.
+
+```{r}
+# Set subset genotype list and order for analysis and visualization
+geno_list = c("b3Col","b3ThasKO1","b3ThasKO2","b3ThahKO","b3ThadKO","b3ACT2CR","b3ACT2KO","b3BS")
+
+# reads experiment design
+design = read.table("data/metadata.txt", header=T, row.names=1, sep="\t")
+design$group = design$groupID
+
+sub_design = subset(design, group %in% geno_list)
+sub_design$group  = factor(sub_design$group, levels=geno_list)
+
+m="pc"
+
+# usearch tax
+tax_sample = read.table(paste("data/taxonomy_", m, ".txt", sep=""), header=T, row.names=1, sep="\t", comment.char="") 
+
+# Decreased by abundance
+mean_sort = tax_sample[(order(-rowSums(tax_sample))), ]
+mean_sort = as.data.frame(mean_sort)
+# Only show top 10 phylum, other into Low abundance: control legend number
+other = colSums(mean_sort[10:dim(mean_sort)[1], ])
+mean_sort = mean_sort[1:(10 - 1), ]
+mean_sort = rbind(mean_sort,other)
+rownames(mean_sort)[10] = c("Low abundance")
+
+# Cross screenning
+idx = rownames(sub_design) %in% colnames(mean_sort)
+sub_design=sub_design[idx,]
+mean_sort = mean_sort[,rownames(sub_design)]
+
+
+# Set new variance to part 
+merge_tax=mean_sort
+sampFile = data.frame(sample=row.names(sub_design), group=sub_design$group,row.names = row.names(sub_design))
+
+
+# 4.1 Stackplot for each samples
+write.table("Taxonomy\t\t", file=paste("fig4/c.tax_", m, "_sample.txt",sep=""),append = F, quote = F, eol = "", row.names = F, col.names = F)
+suppressWarnings(write.table(merge_tax, file=paste("fig4/c.tax_", m, "_sample.txt",sep=""), append = T, quote = F, sep="\t", eol = "\n", na = "NA", dec = ".", row.names = T, col.names = T))
+mean_sort$tax = rownames(mean_sort)
+data_all = as.data.frame(melt(mean_sort, id.vars=c("tax")))
+data_all = merge(data_all, sampFile, by.x="variable", by.y = "sample")
+
+levels(data_all$group) = c("Col-0","thas-ko1","thas-ko2","thah-ko","thao-ko","thaa2-ko","thaa2-crispr","Soil")
+
+p = ggplot(data_all, aes(x=variable, y = value, fill = tax )) +
+	geom_bar(stat = "identity",position="fill", width=1)+
+	scale_y_continuous(labels = scales::percent) +
+	facet_grid( ~ group, scales = "free_x", switch = "x") +  theme(strip.background = element_blank())+
+	theme(axis.ticks.x = element_blank(), axis.text.x = element_blank())+
+	xlab("Groups")+ylab("Percentage (%)")+ theme_classic()+theme(axis.text.x=element_text(angle=45,vjust=1, hjust=1))
+p
+ggsave(paste("fig4/c.tax_", m, "_sample.pdf", sep=""), p, width = 5, height = 3)
+
+
+# 4.2 Stackplot for group average samples
+
+# merge by group
+mat_t = t(merge_tax)
+mat_t2 = merge(sampFile, mat_t, by="row.names")
+mat_t2 = mat_t2[,c(-1,-2)]
+mat_mean = aggregate(mat_t2[,-1], by=mat_t2[1], FUN=mean) # mean
+mat_mean_final = do.call(rbind, mat_mean)[-1,]
+geno = mat_mean$group
+colnames(mat_mean_final) = geno
+
+# save plot text
+mean_sort=as.data.frame(mat_mean_final)
+write.table("Taxonomy\t", file=paste("fig4/c.tax_", m, "_group.txt",sep=""),append = F, quote = F, eol = "", row.names = F, col.names = F)
+suppressWarnings(write.table(mean_sort, file=paste("fig4/c.tax_", m, "_group.txt",sep=""), append = T, quote = F, sep="\t", eol = "\n", na = "NA", dec = ".", row.names = T, col.names = T))
+
+mean_sort$tax = rownames(mean_sort)
+data_all = as.data.frame(melt(mean_sort, id.vars=c("tax")))
+levels(data_all$variable) = c("Col-0","thas-ko1","thas-ko2","thah-ko","thao-ko","thaa2-ko","thaa2-crispr","Soil")
+p = ggplot(data_all, aes(x=variable, y = value, fill = tax )) + 
+  geom_bar(stat = "identity",position="fill", width=0.7)+ 
+  scale_y_continuous(labels = scales::percent) + 
+  xlab("Groups")+ylab("Percentage (%)")+ theme_classic()
+if (length(unique(data_all$variable))>3){
+	p=p+theme(axis.text.x=element_text(angle=45,vjust=1, hjust=1))
+}
+p
+ggsave(paste("fig4/c.tax_", m, "_group.pdf", sep=""), p, width = 5, height = 3)
+```
+
+## (C, D) Venn diagrams showing significant overlap of OTUs depleted (C) or enriched (D) in the root microbiota of A. thaliana triterpene mutant lines c.f. the wild type (Col-0) (pink circles) with those depleted in the root microbiota of rice (blue circles) and wheat (orange circles) versus the A. thaliana wild type Col-0. 
+
+The OTU numbers specifically enriched in the root microbiota of A. thaliana Col-0 c.f. rice and wheat are highlighted in blue and bold in the Venn diagram overlaps.
+
+
+### (C) Depleted in rice, wheat and triterpene mutants vs Col-0
+
+```{r venn, echo=TRUE}
+library(VennDiagram)
+num =3
+data <- read.table(file="data/diff.list", sep="\t", quote="")
+RiceCp35_b3Col_D <- data[grepl("\\<RiceCp35_b3Col_D\\>",data[,2]),1]
+WheatD35L1_b3Col_D <- data[grepl("\\<WheatD35L1_b3Col_D\\>",data[,2]),1]
+All3T_D <- data[grepl("\\<All3T_D\\>",data[,2]),1]
+color_v <- c("dodgerblue", "goldenrod1", "darkorange1", "seagreen3", "orchid3")[1:num]
+p <- venn.diagram( 
+	x = list("depleted in rice (vs. Col-0)"=RiceCp35_b3Col_D, "depleted in wheat"=WheatD35L1_b3Col_D, "depleted in triterpene mutants "=All3T_D),
+	filename = NULL, col = "transparent", 
+	fill = color_v,
+	alpha = 0.50,
+	label.col = c("black"),
+	cex = 1, fontfamily = "Helvetica",
+	cat.default.pos="outer",
+	cat.pos=0, margin=0.1,  
+	cat.col = color_v,cat.cex = 1, cat.fontfamily = "Helvetica"
+)
+grid.draw(p)
+```
+
+Permuatation test for overlapped rice and wheat common vs Arabidopsis
+
+```{r test}
+# Set number in each set
+total = 1349
+overlap=170
+n1=overlap+324
+n2=overlap+104+69+37
+# Set title
+title="rice_wheat_ath_depleted"
+
+# Set sample times
+n=100000
+
+null <- vector("numeric",n)
+for (i in 1:n) {
+  set.seed(i)
+  A = sample(1:total, n1)
+  set.seed(n+i)
+  B = sample(1:total, n2)
+  null[i] <- length( intersect(A, B))
+}
+pvalue = length(null[null>=overlap])/length(null)
+pvalue
+
+# ggplot visualization
+df = as.data.frame(null)
+colnames(df)="number"
+p = ggplot(df, aes(x=number))+geom_line(stat="density", colour = "green")+ theme_bw()+
+  geom_vline(xintercept=overlap, linetype=2)+annotate("text",x=overlap,y=0.03, label=paste("P = ", pvalue, sep="")) 
+ggsave(paste("fig4/c.",title,total,n1,n2,overlap,".pdf", sep="."), p, width = 5, height = 3)
+p
+```
+
+
+
+### (D) depleted in rice, wheat and enriched in triterpene mutants vs Col-0
+
+```{r vennD, echo=TRUE}
+library(VennDiagram)
+num =3
+data <- read.table(file="data/diff.list", sep="\t", quote="")
+RiceCp35_b3Col_D <- data[grepl("\\<RiceCp35_b3Col_D\\>",data[,2]),1]
+WheatD35L1_b3Col_D <- data[grepl("\\<WheatD35L1_b3Col_D\\>",data[,2]),1]
+All3T_E <- data[grepl("\\<All3T_E\\>",data[,2]),1]
+color_v <- c("dodgerblue", "goldenrod1", "darkorange1", "seagreen3", "orchid3")[1:num]
+p <- venn.diagram( 
+	x = list("depleted in rice (vs. Col-0)"=RiceCp35_b3Col_D, "depleted in wheat"=WheatD35L1_b3Col_D, "enriched in triterpene mutants "=All3T_E),
+	filename = NULL, col = "transparent", 
+	fill = color_v,
+	alpha = 0.50,
+	label.col = c("black"),
+	cex = 1, fontfamily = "Helvetica",
+	cat.default.pos="outer",
+	cat.pos=0, margin=0.1,  
+	cat.col = color_v,cat.cex = 1, cat.fontfamily = "Helvetica"
+)
+grid.draw(p)
+```
+
+Permuatation test for overlapped rice and wheat common vs Arabidopsis
+
+```{r testDDE}
+# Set number in each set
+total = 1349
+overlap=88
+n1=overlap+406
+n2=overlap+90+51+69
+# Set title
+title="rice_wheat_ath_DDE"
+
+# Set sample times
+n=100000
+
+null <- vector("numeric",n)
+for (i in 1:n) {
+  set.seed(i)
+  A = sample(1:total, n1)
+  set.seed(n+i)
+  B = sample(1:total, n2)
+  null[i] <- length( intersect(A, B))
+}
+pvalue = length(null[null>=overlap])/length(null)
+pvalue
+
+# ggplot visualization
+df = as.data.frame(null)
+colnames(df)="number"
+p = ggplot(df, aes(x=number))+geom_line(stat="density", colour = "green")+ theme_bw()+
+  geom_vline(xintercept=overlap, linetype=2)+annotate("text",x=overlap,y=0.03, label=paste("P = ", pvalue, sep="")) 
+ggsave(paste("fig4/c.",title,total,n1,n2,overlap,".pdf", sep="."), p, width = 5, height = 3)
+p
+```
+
